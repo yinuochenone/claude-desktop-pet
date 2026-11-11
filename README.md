@@ -2,9 +2,9 @@
 
 A pixel pet that lives on your Mac desktop. It runs on your Claude usage: the more you have left, the livelier it is.
 
-[![Watch the 60-second demo](docs/preview.gif)](https://github.com/yinuochenone/claude-desktop-pet/releases/latest/download/pet-demo.mp4)
+![The pet waking up, coming when called, playing hide and seek, eating a file and focusing beside you](docs/preview.gif)
 
-**▶ [Watch the 60-second demo](https://github.com/yinuochenone/claude-desktop-pet/releases/latest/download/pet-demo.mp4)**
+**▶ [Download the full 60-second demo](https://github.com/yinuochenone/claude-desktop-pet/releases/latest/download/pet-demo.mp4)** (MP4, 40 MB)
 
 ## Install (1 minute)
 
