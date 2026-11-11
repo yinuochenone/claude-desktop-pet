@@ -1,0 +1,100 @@
+<!doctype html>
+<html data-theme="bubblegum">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Claude Usage</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen&family=VT323&display=swap" rel="stylesheet">
+<style>
+[data-theme=bubblegum]{--bg1:#fff4fa; --bg2:#ffd9ee; --accent:#ff5fb4; --accent3:#7fd8ff; --ink:#5a2369}
+[data-theme=aqua]{--bg1:#f2fcff; --bg2:#cdeeff; --accent:#22aaff; --accent3:#ffd36b; --ink:#0f4467}
+[data-theme=cyber]{--bg1:#fbfbff; --bg2:#e2e2ee; --accent:#8a5cff; --accent3:#7cff4f; --ink:#23173f}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:transparent;overflow:hidden;-webkit-user-select:none;user-select:none;cursor:default}
+body{padding:6px}
+
+/* glossy gel pill with a holographic rim */
+.pill{position:relative;display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 11px 0 9px;border-radius:99px;
+  border:2px solid transparent;
+  background:linear-gradient(180deg,var(--bg1) 0%,var(--bg1) 48%,var(--bg2) 52%,var(--bg1) 100%) padding-box,
+             linear-gradient(115deg,#ff9fe5,#a7e9ff,#d2ffa6,#ffe1a1,#d5a6ff,#ff9fe5) border-box;
+  background-size:100% 100%,300% 100%;animation:holo 6s ease-in-out infinite alternate;
+  box-shadow:0 2px 6px rgba(60,20,80,.28)}
+.pill::after{content:"";position:absolute;left:12px;right:12px;top:2px;height:7px;border-radius:99px;pointer-events:none;
+  background:linear-gradient(rgba(255,255,255,.95),rgba(255,255,255,0))}
+@keyframes holo{to{background-position:0 0,100% 50%}}
+.pill>*{position:relative;z-index:1}
+
+.stat{display:flex;align-items:baseline;gap:3px;white-space:nowrap}
+.num{min-width:34px;text-align:right;font:400 21px/1 "VT323",monospace;color:var(--ink);text-shadow:1px 1px 0 var(--accent3)}
+#week{min-width:26px;font-size:18px}
+.tag{font:400 7px "Silkscreen",monospace;color:var(--ink);opacity:.7;text-transform:uppercase}
+.sep{font-size:9px;color:var(--accent)}
+.bar{width:50px;height:10px;flex:none;border-radius:99px;overflow:hidden;background:#fff;border:1.5px solid var(--ink)}
+.fill.low{background:repeating-linear-gradient(45deg,#ff4d6d 0 5px,#ffb3c1 5px 10px);background-size:14.14px 14.14px}
+.fill{height:100%;width:0;border-radius:99px;transition:width .6s ease;
+  background:repeating-linear-gradient(45deg,var(--accent) 0 5px,color-mix(in srgb,var(--accent) 50%,#fff) 5px 10px);
+  background-size:14.14px 14.14px;animation:stripes .9s linear infinite}
+@keyframes stripes{to{background-position:14.14px 0}}
+.time{font:400 8px "Silkscreen",monospace;color:var(--ink);white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="pill" id="pill">
+  <span class="stat"><span class="num" id="left">—</span><span class="tag">left</span></span>
+  <div class="bar"><div class="fill" id="fill"></div></div>
+  <span class="time" id="time">↻ —</span>
+  <span class="sep">✦</span>
+  <span class="stat"><span class="tag">week</span><span class="num" id="week">—</span></span>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const post = (msg) => { try { window.webkit.messageHandlers.app.postMessage(msg); } catch (_) {} };
+const PAD = 6;
+let local = null, plan = null;
+
+function dur(ms) {
+  if (ms <= 0) return "now";
+  const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  return d ? `${d}d ${h % 24}h` : h ? `${h}h ${String(m % 60).padStart(2, "0")}m` : `${m}m`;
+}
+
+// Resets come back as e.g. 01:59:59.9, so round to the nearest minute before showing them.
+const minute = (ms) => new Date(Math.round(ms / 60e3) * 60e3);
+const clock = (ms) => minute(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).replace(/\s/g, "").toLowerCase();
+const day = (ms) => minute(ms).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+
+window.setTheme = (t) => { document.documentElement.dataset.theme = t; };
+document.addEventListener("mousedown", (e) => { if (e.button === 0) post({ cmd: "dismiss" }); });
+new ResizeObserver(() => {
+  const r = $("pill").getBoundingClientRect();
+  post({ cmd: "size", w: Math.ceil(r.width) + 2 * PAD, h: Math.ceil(r.height) + 2 * PAD });
+}).observe($("pill"));
+
+function render() {
+  const s = plan && plan.session, w = plan && plan.weekly;
+  // Round "used" first, like Claude's usage page, so the two always add up to 100.
+  const left = s ? Math.max(0, Math.min(100, 100 - Math.round(s.used))) : null;
+  // Fall back to our own estimate of the reset if the plan limits couldn't be read.
+  const reset = s ? s.resetsAt : local && local.blockEnd;
+
+  $("left").textContent = left == null ? "—" : Math.round(left) + "%";
+  $("fill").style.width = (left == null ? 0 : Math.max(left, 4)) + "%";
+  $("fill").classList.toggle("low", left != null && left < 20);
+  $("time").textContent = reset ? "↻ " + clock(reset) : "↻ —";
+  $("week").textContent = w ? Math.round(w.used) + "%" : "—";
+  $("pill").title = plan && plan.error ? `couldn't read plan limits: ${plan.error}` : [
+    s ? `session: ${Math.round(s.used)}% used` + (s.resetsAt ? ` · resets in ${dur(s.resetsAt - Date.now())}` : "") : "",
+    w ? `week (all models): ${Math.round(w.used)}% used` + (w.resetsAt ? ` · resets ${day(w.resetsAt)}` : "") : "",
+  ].filter(Boolean).join("\n");
+}
+
+window.update = (d) => { local = d; render(); };
+// A failed refresh keeps the last good numbers on screen; the tooltip says what went wrong.
+window.limits = (d) => { plan = d.error && plan && plan.session ? { ...plan, error: d.error } : d; render(); };
+</script>
+</body>
+</html>

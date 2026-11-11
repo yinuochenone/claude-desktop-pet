@@ -1,0 +1,1027 @@
+<!doctype html>
+<html data-theme="bubblegum">
+<head>
+<meta charset="utf-8">
+<title>Claude Pet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#2a2238}
+[data-theme=bubblegum]{--acc:#ff5fb4; --tip:#ff5fb4}
+[data-theme=aqua]{--acc:#22aaff; --tip:#ffc93c}
+[data-theme=cyber]{--acc:#8a5cff; --tip:#5cff3a}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:260px;height:150px;background:transparent;overflow:hidden;-webkit-user-select:none;user-select:none;cursor:default}
+#stage{position:absolute;inset:0}
+
+/* #pet is the hit box Swift uses (centred, bottom 6, 34×34); keep the two in sync. */
+#pet{position:absolute;left:113px;bottom:6px;width:34px;height:34px}
+/* Drawn like an old LCD: every pixel a dot with a hairline gap and a faint ghost under it. */
+#sprite,#glow{position:absolute;bottom:0;pointer-events:none}
+/* Dreamcore bloom: a soft pastel halo around it, and its bright pixels glowing from inside. */
+#sprite{filter:drop-shadow(0 0 1.5px rgba(255,226,250,.55)) drop-shadow(0 0 7px rgba(206,182,255,.42))}
+#glow{filter:blur(2px);opacity:.9;animation:dream 3.4s ease-in-out infinite alternate}
+@keyframes dream{from{opacity:.5}to{opacity:1}}
+#pet[data-mood=sleepy] #sprite{filter:brightness(.85) drop-shadow(0 0 5px rgba(206,182,255,.3))}
+#shadow{position:absolute;left:8px;bottom:-1px;width:18px;height:2px;background:rgba(30,10,45,.2);
+  clip-path:polygon(2px 0,calc(100% - 2px) 0,100% 100%,0 100%)}
+/* the bedroom page (pet.html?bed) */
+body.bedmode #stage{display:none}
+#bedroom{display:none;position:absolute;right:4px;bottom:0}
+body.bedmode #bedroom{display:block}
+#bedroom canvas{position:absolute;right:0;bottom:0}
+#bedroom #bedcanvas{filter:drop-shadow(0 0 1.5px rgba(255,226,250,.5)) drop-shadow(0 0 6px rgba(206,182,255,.35))}
+#bedroom #bedglow{filter:blur(2px);animation:dream 3.4s ease-in-out infinite alternate}
+/* the air it sucks in while its mouth is open */
+.gust{position:absolute;width:8px;height:2px;background:#fff;box-shadow:0 0 0 1px rgba(40,30,60,.35);pointer-events:none}
+/* jumps move in whole sprite pixels so it stays crisp */
+.hop{animation:hop .5s steps(1,end)}
+@keyframes hop{0%{transform:none}15%{transform:translateY(-4px)}30%{transform:translateY(-8px)}55%{transform:translateY(-6px)}75%{transform:translateY(-2px)}90%{transform:none}}
+
+.fx{position:absolute;pointer-events:none;font:400 9px "Silkscreen",monospace;line-height:1;white-space:nowrap;color:var(--ink);image-rendering:pixelated}
+.fx.bang{font-size:15px;color:var(--acc);text-shadow:1px 0 var(--ink),-1px 0 var(--ink),0 1px var(--ink),0 -1px var(--ink)}
+.fx.zz{opacity:.8}
+
+#bubble{position:absolute;left:50%;bottom:62px;transform:translateX(-50%);opacity:0;pointer-events:none;transition:opacity .12s steps(2)}
+#bubble.show{opacity:1}
+#bubble .box{padding:2px 4px 3px;background:#fff;color:var(--ink);font:400 8px "Silkscreen",monospace;white-space:nowrap;
+  box-shadow:inset 0 0 0 2px var(--ink);
+  clip-path:polygon(2px 0,calc(100% - 2px) 0,calc(100% - 2px) 2px,100% 2px,100% calc(100% - 2px),calc(100% - 2px) calc(100% - 2px),calc(100% - 2px) 100%,2px 100%,2px calc(100% - 2px),0 calc(100% - 2px),0 2px,2px 2px)}
+#bubble .tail{position:absolute;left:50%;bottom:-4px;margin-left:-2px;width:4px;height:2px;background:var(--ink)}
+#bubble .tail::after{content:"";position:absolute;left:1px;top:2px;width:2px;height:2px;background:var(--ink)}
+/* at home the menu bar sits above its head, so the bubble goes to its left */
+#stage.home #bubble{left:auto;right:158px;bottom:22px;transform:none}
+#stage.home #bubble .tail{left:auto;right:-4px;bottom:5px;width:2px;height:4px;margin:0}
+#stage.home #bubble .tail::after{left:2px;top:1px}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="pet" data-mood="ok">
+    <div id="shadow"></div>
+    <canvas id="sprite"></canvas>
+    <canvas id="glow"></canvas>
+  </div>
+  <div id="bubble"><div class="box"></div><div class="tail"></div></div>
+</div>
+<div id="bedroom"><canvas id="bedcanvas"></canvas><canvas id="bedglow"></canvas></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const pet = $("pet"), stage = $("stage"), sprite = $("sprite"), glow = $("glow"), bubble = $("bubble"), shadow = $("shadow");
+const ctx = sprite.getContext("2d"), gtx = glow.getContext("2d");
+const BEDMODE = location.search.includes("bed");  // the same page draws the bedroom in its own window
+const post = (msg) => { try { window.webkit.messageHandlers[BEDMODE ? "bed" : "pet"].postMessage(msg); } catch (_) {} };
+const pick = (a) => a[Math.floor(Math.random() * a.length)];
+const rand = (lo, hi) => lo + Math.random() * (hi - lo);
+
+// ---------- the sprite, in 16×16 pixels (rows can go up to -3 for the flower) ----------
+// k rim · w body · f feet · e eyes · a antenna tip · p pink · l blush · m mouth · b sweat
+// q r t: the big mouth's rim, inside and tongue · o y: flame
+const BODY = [
+  ".....kkkkkk.....",
+  "...kkwwwwwwkk...",
+  "..kwwwwwwwwwwk..",
+  "..kwwwwwwwwwwk..",
+  ".kwwwwwwwwwwwwk.",
+  ".kwwwwwwwwwwwwk.",
+  ".kwwwwwwwwwwwwk.",
+  ".kwwwwwwwwwwwwk.",
+  ".kwwwwwwwwwwwwk.",
+  "..kwwwwwwwwwwk..",
+  "...kkwwwwwwkk...",
+  ".....kkkkkk.....",
+]; // rows 2–13
+const FOOT = ["kffk", ".kk."];
+const FEET = { both: [14, 14], lUp: [13, 14], rUp: [14, 13], air: [13, 13] }; // top row of each foot
+const ANT = {
+  up:    [[0,8,"k"],[0,9,"a"],[0,10,"k"],[1,9,"k"]],
+  lean:  [[0,7,"k"],[0,8,"a"],[0,9,"k"],[1,8,"k"]],
+  droop: [[1,10,"k"],[1,11,"a"],[1,12,"k"],[2,11,"k"]],
+  flop:  [[2,11,"k"],[3,13,"k"],[4,14,"a"],[4,15,"k"],[3,14,"k"],[5,14,"k"]],
+};
+const mirror = (pts) => pts.map(([y, x, c]) => [y, 15 - x, c]);
+const both = (left) => left.concat(mirror(left));
+const EYES = {
+  open:   both([[6,5,"e"],[7,5,"e"]]),
+  wide:   both([[6,4,"e"],[6,5,"e"],[7,4,"e"],[7,5,"e"]]),
+  closed: both([[7,4,"e"],[7,5,"e"],[7,6,"e"]]),
+  happy:  both([[7,4,"e"],[6,5,"e"],[7,6,"e"]]),
+  half:   both([[7,4,"e"],[7,5,"e"],[7,6,"e"],[6,5,"e"]]),
+  heart:  both([[6,4,"p"],[6,6,"p"],[7,4,"p"],[7,5,"p"],[7,6,"p"],[8,5,"p"]]),
+  dizzy:  both([[6,4,"e"],[6,6,"e"],[7,5,"e"],[8,4,"e"],[8,6,"e"]]),
+  wink:   [[6,5,"e"],[7,5,"e"],[7,9,"e"],[6,10,"e"],[7,11,"e"]],
+};
+const MOUTH = {
+  none: [],
+  w:    [[9,6,"e"],[10,7,"e"],[10,8,"e"],[9,9,"e"]],
+  o:    [[9,7,"m"],[9,8,"m"],[10,7,"m"],[10,8,"m"]],
+  d:    [[9,6,"e"],[9,7,"e"],[9,8,"e"],[9,9,"e"],[10,7,"m"],[10,8,"m"]],
+  flat: [[10,7,"e"],[10,8,"e"]],
+  yawn: [[9,7,"m"],[9,8,"m"],[10,7,"m"],[10,8,"m"],[11,7,"m"],[11,8,"m"]],
+};
+// Wide open for a file, Kirby style: rows 5-12, over the face, with its eyes squeezed shut above.
+const GAPE = [
+  "....qqqqqqqq....",
+  "...qrrrrrrrrq...",
+  "..qrrrrrrrrrrq..",
+  "..qrrrrrrrrrrq..",
+  "..qrrrrrrrrrrq..",
+  "..qrrrttttrrrq..",
+  "...qrttttttrq...",
+  "....qqqqqqqq....",
+];
+const GAPE_EYES = both([[4,4,"e"],[3,5,"e"],[4,6,"e"]]);
+const ARMS = {
+  down: both([[8,0,"k"],[9,0,"k"],[8,1,"w"],[9,1,"w"]]),
+  up:   both([[5,1,"k"],[4,0,"k"]]),
+  waveA: [[8,0,"k"],[9,0,"k"],[8,1,"w"],[9,1,"w"],[5,14,"k"],[4,15,"k"]],
+  waveB: [[8,0,"k"],[9,0,"k"],[8,1,"w"],[9,1,"w"],[8,15,"k"],[9,15,"k"],[8,14,"w"],[9,14,"w"]],
+};
+const BLUSH_ON = both([[8,3,"p"],[8,4,"p"],[9,3,"l"],[9,4,"l"]]);
+const SWEAT = [[1,13,"b"],[2,13,"b"],[2,12,"b"]];
+// Its desk for focus sessions, drawn in front of it: D top · d front · K laptop lid. The ten dots on the
+// front fill up as the session goes, so you can see the time passing.
+const DESK = [
+  "....kKKKKKKk....",
+  "....kKKaKKKk....",
+  "kDDDDDDDDDDDDDDk",
+  "kddddddddddddddk",
+  "kddddddddddddddk",
+  "kddddddddddddddk",
+  ".k............k.",
+]; // rows 8-14
+const PAWS = [[[8, 3, "w"], [9, 3, "k"], [9, 13, "w"], [8, 13, "k"]], [[9, 3, "w"], [8, 3, "k"], [8, 13, "w"], [9, 13, "k"]]];
+const deskDots = (p) => Array.from({ length: 10 }, (_, i) => [12, 3 + i, i < Math.floor(p * 10 + 1e-6) ? "PLY"[i % 3] : "k"]);
+// The sprout opens into a flower when it's happy: P L petals, Y centre, G stem and leaf.
+const FLOWER = {
+  half: [[-1,8,"L"],[-1,9,"P"],[-1,10,"L"],[0,9,"G"],[1,9,"G"]],
+  full: [[-3,9,"P"],[-2,8,"P"],[-2,10,"P"],[-1,7,"L"],[-1,8,"P"],[-1,9,"Y"],[-1,10,"P"],[-1,11,"L"],
+         [0,8,"P"],[0,10,"P"],[0,9,"G"],[1,9,"G"],[1,10,"G"]],
+};
+// flying: the sprout spins like a little propeller
+const PROP = [
+  [[0,6,"k"],[0,7,"k"],[0,8,"k"],[0,9,"a"],[0,10,"k"],[0,11,"k"],[0,12,"k"],[1,9,"k"]],
+  [[0,8,"k"],[0,9,"a"],[0,10,"k"],[1,9,"k"]],
+];
+// g is the theme colour
+const GEAR = {
+  glasses: both([[5,3,"e"],[5,4,"e"],[5,5,"e"],[5,6,"e"],[6,3,"e"],[7,3,"e"],[6,6,"e"],[7,6,"e"],[8,3,"e"],[8,4,"e"],[8,5,"e"],[8,6,"e"],[6,7,"e"]]),
+  phones: both([[1,4,"k"],[1,5,"k"],[1,6,"k"],[1,7,"k"],[2,3,"k"],[3,2,"k"],[4,1,"k"],[5,0,"g"],[5,1,"g"],[6,0,"g"],[6,1,"g"],[7,0,"g"],[7,1,"g"]]),
+};
+
+// little pixel effects
+const FX = {
+  "♥": { rows: [".kk.kk.", "kppkppk", "kpppppk", ".kpppk.", "..kpk..", "...k..."], scale: 2 },
+  "✦": { rows: ["..k..", ".kak.", "kaaak", ".kak.", "..k.."], scale: 2 },
+  "♪": { rows: ["..kkk", "..k.k", "..k..", "kkk..", "kkk.."], scale: 2 },
+  "🔥": { rows: ["..y..", ".yo..", ".yoy.", "yoooy", "yoyoy", ".yyy."], scale: 3 },
+  "❀": { rows: [".P.", "PYP", ".P."], scale: 2 },
+};
+
+let PAL = {};
+function readPalette() {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (n) => cs.getPropertyValue(n).trim();
+  // dusky LCD ink with white eyes, and soft dreamy pastels for everything that glows
+  PAL = { k: "#5b5478", w: "#17142a", f: "#2a2544", e: "#fbf7ff", a: "#ffc6e6", g: v("--acc"), p: "#ff6fae", l: "#ff9cc8",
+          m: "#ff7aa8", b: "#a8e6ff", q: "#ffbfd9", r: "#5a1236", t: "#ff7fae", o: "#ff8a3d", y: "#ffd84a",
+          P: "#ffb3dc", L: "#d4c2ff", Y: "#fff3a6", G: "#a9efc4", D: "#cdbcf5", d: "#9a8bd0", K: "#e9e4fb",
+          H: "#b9a8e6", h: "#cfc2f2", O: "#fbf6ff", B: "#ffc1dd", c: "#ffd9ea", F: "#8e80c4" };
+}
+
+// ---------- state ----------
+let energy = 0.7, mode = "sit", busy = 0, token = 0, gear = "";
+let look = 0, lookUp = 0, toldLook = [0, 0];  // where Swift says the cursor is
+let fc = { eyes: "open", mouth: "w", arms: "down", blush: false, sweat: false };
+let anim = null, animStart = 0, blinkUntil = 0, nextBlink = Date.now() + 3000, nervous = false;
+let gapeLevel = 0, scaleOverride = null, chewOpen = false, curScale = 0;
+let shakeLevel = 0, shear = null;  // shear(row) shifts whole rows sideways: the jelly wobble
+const SCALES = [2, 2, 3, 5];  // px per sprite pixel at each mouth size; Swift's mouthBody() matches
+const COLS = 17, ROWS = 20, TOP = 4, BOX = 34, DPR = window.devicePixelRatio || 2;
+const BRIGHT = new Set("eaplmtqyobPLYGO");  // the colours that bloom
+let bloomFrom = 0, bloomUntil = 0;
+let focusP = null, focusDots = 0;  // how far through a focus session it is (0...1), or null
+
+function moodFor(e) { return e >= 0.6 ? "hyper" : e >= 0.35 ? "ok" : e >= 0.15 ? "tired" : "sleepy"; }
+const moving = () => ["walk", "run", "sneak", "fly", "jump"].includes(mode);
+const pace = () => 0.55 + 0.9 * energy;
+
+/** The resting face: calm, with no mouth. Only things you do to it bring out expressions. */
+function base() {
+  const m = moodFor(energy);
+  if (mode === "fall") return { eyes: "wide", mouth: "o", arms: "up" };
+  if (mode === "held") return { eyes: m === "sleepy" ? "half" : "happy", mouth: "d", arms: "up" };
+  if (mode === "gape") return { eyes: "wide", mouth: gapeLevel >= 2 ? "yawn" : "o" };
+  if (mode === "nap") return { eyes: "closed", mouth: "none" };
+  if (m === "sleepy") return { eyes: moving() ? "half" : "closed", mouth: "none" };
+  if (m === "tired") return { eyes: "half", mouth: "none" };
+  return { eyes: "open", mouth: "none" };
+}
+
+function face(f) {
+  const b = base();
+  fc = { eyes: f.eyes || b.eyes, mouth: f.mouth || b.mouth, arms: f.arms || b.arms || "down", blush: !!f.blush, sweat: !!f.sweat };
+}
+
+/** One-shot moves, played out in whole pixels by draw(). */
+function move(name) {
+  anim = name || null;
+  animStart = Date.now();
+  sprite.classList.remove("hop");
+  if (name === "hop" || name === "pop" || name === "spin" || name === "dance") {
+    void sprite.offsetWidth;
+    sprite.classList.add("hop");
+  }
+}
+
+// ---------- drawing ----------
+// Everything is drawn twice: the LCD dots, then only the bright ones again, blurred, for the bloom.
+let C = ctx, glowPass = false, cellPx = 4, rowOffset = TOP;
+function dot(x, y, c) {
+  if (glowPass && !BRIGHT.has(c)) return;
+  const g = 0.55 / cellPx;  // about one screen pixel of gap between dots
+  C.fillStyle = PAL[c];
+  C.fillRect(x + g, y + rowOffset + g, 1 - 2 * g, 1 - 2 * g);
+}
+function put(pts, dx, dy) {
+  for (const [y, x, c] of pts) dot(x + dx + (shear ? shear(y) : 0), y + dy, c);
+}
+function rows(list, y0, dx, dy) {
+  list.forEach((row, i) => {
+    for (let x = 0; x < row.length; x++) if (row[x] !== ".") dot(x + dx + (shear ? shear(y0 + i) : 0), y0 + i + dy, row[x]);
+  });
+}
+/** Clears a canvas pair and runs paint() on each: the dots (with their LCD ghost), then the glow. */
+function paintBoth(main, glowCtx, scale, paint) {
+  cellPx = scale * DPR;
+  for (const [c, g] of [[main, false], [glowCtx, true]]) {
+    C = c;
+    glowPass = g;
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.clearRect(0, 0, c.canvas.width, c.canvas.height);
+    c.setTransform(cellPx, 0, 0, cellPx, 0, 0);
+    c.shadowColor = g ? "transparent" : "rgba(12,6,30,.38)";
+    c.shadowOffsetX = c.shadowOffsetY = g ? 0 : Math.max(1, DPR * 0.6);
+    c.save();
+    paint();
+    c.restore();
+  }
+}
+
+/** Opens the flower on its head for a while (happy moments only). */
+function bloom(ms = 5000) {
+  const now = Date.now();
+  if (moodFor(energy) === "sleepy") return;
+  if (now > bloomUntil) {
+    bloomFrom = now;
+    for (let i = 0; i < 3; i++) fx("❀", "", { x: 50 + rand(-10, 10), y: 50, dx: rand(-14, 14), dy: rand(14, 24), delay: 150 + i * 120, dur: 1300 });
+  }
+  bloomUntil = Math.max(bloomUntil, now + ms);
+}
+function bloomStage(now, m) {
+  if (m === "sleepy" || now > bloomUntil + 260) return 0;
+  const s = now < bloomFrom + 180 || now > bloomUntil ? 1 : 2;
+  return m === "tired" ? Math.min(s, 1) : s;
+}
+
+/** Grows from its feet; the speech bubble follows its head. */
+function applyScale() {
+  const s = scaleOverride ?? (mode === "gape" ? SCALES[gapeLevel] : 2);
+  if (s === curScale) return;
+  curScale = s;
+  const w = COLS * s, h = ROWS * s, sh = Math.round(17 * s * 0.53);
+  for (const c of [sprite, glow]) {
+    c.width = w * DPR;
+    c.height = h * DPR;
+    c.style.width = w + "px";
+    c.style.height = h + "px";
+    c.style.left = (BOX - w) / 2 + "px";
+  }
+  shadow.style.width = sh + "px";
+  shadow.style.left = (BOX - sh) / 2 + "px";
+  layoutBubble();
+}
+
+function layoutBubble() {
+  const s = curScale || 2;
+  if (stage.classList.contains("home")) {
+    bubble.style.left = "auto";
+    bubble.style.right = 130 + (17 * s) / 2 + 2 + "px";
+    bubble.style.bottom = Math.round(6 + 17 * s * 0.35) + "px";
+  } else {
+    bubble.style.left = "50%";
+    bubble.style.right = "auto";
+    bubble.style.bottom = 6 + ROWS * s + 2 + "px";
+  }
+}
+
+function draw() {
+  applyScale();
+  const now = Date.now(), t = now - animStart, p = pace(), m = moodFor(energy);
+  let dx = 0, dy = 0, feet = "both", flip = false, lie = false, eyes = fc.eyes, arms = fc.arms;
+
+  // gait and idle bob
+  if (mode === "walk" || mode === "run") {
+    const f = Math.floor(now / ((mode === "run" ? 90 : 170) / p)) % 4;
+    feet = ["both", "lUp", "both", "rUp"][f];
+    dy = f % 2 ? -1 : 0;
+  } else if (mode === "sneak") {
+    const f = Math.floor(now / 320) % 4;
+    feet = ["both", "lUp", "both", "rUp"][f];
+    dy = 1;
+  } else if (mode === "fly") {
+    feet = "air";
+    dy = Math.floor(now / 160) % 2 ? -1 : 0;
+  } else if (mode === "fall" || mode === "jump") {
+    feet = "air";
+  } else if (mode === "held") {
+    feet = Math.floor(now / 110) % 2 ? "lUp" : "rUp";  // kicking its little feet
+  } else if (mode === "nap") {
+    dy = 1 + (Math.floor(now / 1600) % 2);  // slow, deep breaths
+  } else if (m === "sleepy" && mode === "sit") {
+    dy = 1 + (Math.floor(now / (1300 / p)) % 2);
+  } else {
+    dy = Math.floor(now / (700 / p)) % 2;
+  }
+  if (mode === "peek-l") dx = -1;
+  if (mode === "peek-r") dx = 1;
+  if (nervous) dx += Math.floor(now / 90) % 2 ? 1 : 0;
+
+  // one-shot moves
+  if (anim) {
+    const step = (ms) => Math.floor(t / ms);
+    switch (anim) {
+      case "squish": dy = t < 130 ? 1 : t < 230 ? -1 : 0; if (t < 130) feet = "both"; break;
+      case "wiggle": if (t < 900) dx += step(110) % 2 ? 1 : -1; break;
+      case "lean": if (t < 1100) dx += step(280) % 2 ? 1 : -1; break;
+      case "shake": if (t < 840) dx += step(70) % 2 ? 1 : -1; break;
+      case "spin": if (t < 900) flip = step(110) % 2 === 1; break;
+      case "tumble": lie = t > 120 && t < 1150; break;
+      case "dance": if (t < 2200) { dx += [-1, 0, 1, 0][step(140) % 4]; arms = step(280) % 2 ? "waveA" : "waveB"; } break;
+      case "stretch": if (t < 1200) { dy = -1; arms = "up"; } break;
+      case "woozy": if (t < 2300) dx += [-1, 0, 1, 0][step(230) % 4]; break;
+    }
+    if (t > 2400) anim = null;
+  }
+  if (sprite.classList.contains("hop") && t > 80 && t < 420) feet = "air";
+
+  // Being shaken: top and bottom slosh opposite ways, faster the harder you shake.
+  let mouth = fc.mouth, sweat = fc.sweat;
+  if (mode === "held" && shakeLevel > 0) {
+    const ph = Math.floor(now / [0, 110, 80, 60][shakeLevel]) % 2 ? 1 : -1, s = shakeLevel === 3 ? 2 : 1;
+    shear = (y) => (y <= 6 ? ph * s : y >= 10 ? -ph * s : 0);
+    feet = ph > 0 ? "lUp" : "rUp";
+    eyes = shakeLevel >= 2 ? "dizzy" : "wide";
+    mouth = shakeLevel === 3 ? "yawn" : "o";
+    sweat = shakeLevel === 3;
+    sprite.style.translate = `${ph * shakeLevel}px 0`;
+  } else {
+    shear = null;
+    sprite.style.translate = "";
+  }
+  if (arms === "wave") arms = Math.floor(now / 180) % 2 ? "waveA" : "waveB";
+
+  // blinking
+  if (eyes === "open") {
+    if (now > nextBlink) { blinkUntil = now + 130; nextBlink = now + rand(2500, 5500); }
+    if (now < blinkUntil) eyes = "closed";
+  }
+
+  // Like the original, it faces the way it walks.
+  if (moving() && look < 0) flip = !flip;
+  // At its desk the flower tracks the session: a bud, then half open, then open near the end.
+  const working = mode === "work" && focusP != null;
+  const stage2 = Math.max(bloomStage(now, m), working ? (focusP >= 0.9 ? 2 : focusP >= 0.45 ? 1 : 0) : 0);
+  const top = mode === "fly" ? PROP[Math.floor(now / 70) % 2]
+    : stage2 === 2 ? FLOWER.full : stage2 === 1 ? FLOWER.half
+    : m === "sleepy" || mode === "nap" ? ANT.flop : m === "tired" ? ANT.droop : m === "hyper" && Math.floor(now / 260) % 2 ? ANT.lean : ANT.up;
+  const bigMouth = chewOpen || (mode === "gape" && gapeLevel === 3 && !busy);
+
+  rowOffset = TOP;
+  paintBoth(ctx, gtx, curScale, () => {
+    if (lie) { C.translate(8.5, 12.5); C.rotate(Math.PI / 2); C.translate(-8.5, -12.5); }
+    if (flip) { C.translate(16, 0); C.scale(-1, 1); }
+    const [lf, rf] = FEET[feet];
+    rows(FOOT, lf, 4, 0);
+    rows(FOOT, rf, 8, 0);
+    rows(BODY, 2, 0, dy);
+    put(top, 0, dy);
+    if (!working) put(ARMS[arms] || ARMS.down, 0, dy);
+    if (bigMouth) {
+      put(GAPE_EYES, 0, dy);
+      rows(GAPE, 5, 0, dy);
+    } else {
+      if (fc.blush) put(BLUSH_ON, dx, dy);
+      const peeking = mode.startsWith("peek");
+      put(EYES[eyes] || EYES.open, peeking ? dx : look, dy - (lookUp && !peeking ? 1 : 0));
+      put(MOUTH[mouth] || MOUTH.none, dx, dy);
+    }
+    if (sweat) put(SWEAT, 0, dy);
+    if (GEAR[gear]) put(GEAR[gear], 0, dy);
+    if (working) {
+      // tapping away at a little laptop, paws taking turns
+      rows(DESK, 8, 0, 0);
+      put(deskDots(focusP), 0, 0);
+      put(PAWS[Math.floor(now / 260) % 2], 0, 0);
+    }
+  });
+}
+
+// ---------- effects and talking ----------
+function pixelArt(def) {
+  const c = document.createElement("canvas");
+  c.width = def.rows[0].length;
+  c.height = def.rows.length;
+  const g = c.getContext("2d");
+  def.rows.forEach((row, y) => { for (let x = 0; x < row.length; x++) if (row[x] !== ".") { g.fillStyle = PAL[row[x]]; g.fillRect(x, y, 1, 1); } });
+  c.style.width = c.width * def.scale + "px";
+  c.style.height = c.height * def.scale + "px";
+  c.style.imageRendering = "pixelated";
+  return c;
+}
+
+function fx(text, cls, { x = 50, y = 60, dx = 0, dy = 24, dur = 1100, delay = 0 } = {}) {
+  const art = FX[text] || FX[{ "♫": "♪" }[text]];
+  const el = art ? pixelArt(art) : document.createElement("span");
+  el.classList.add("fx");
+  if (cls) el.classList.add(cls);
+  if (el.tagName === "SPAN") el.textContent = text;
+  el.style.left = x + 80 + "px";  // x is measured from the left of a 100px-wide box around the pet
+  el.style.bottom = y + "px";
+  stage.appendChild(el);
+  // at home the menu bar hides anything floating up, so drift left instead
+  if (stage.classList.contains("home")) { dx = -Math.abs(dy) - 6; dy = dy * 0.25; }
+  const snap = (v) => Math.round(v / 2) * 2;
+  const frames = [];
+  for (let i = 0; i <= 6; i++) {
+    const k = i / 6;
+    frames.push({ transform: `translate(calc(-50% + ${snap(dx * k)}px), ${-snap(dy * k)}px)`, opacity: k < 0.15 ? k / 0.15 : k > 0.7 ? (1 - k) / 0.3 : 1, offset: k });
+  }
+  el.animate(frames, { duration: dur, delay, easing: "steps(6, end)", fill: "both" }).onfinish = () => el.remove();
+}
+
+let bubbleTimer = 0;
+function say(text, ms = 1400) {
+  bubble.querySelector(".box").textContent = text;
+  bubble.classList.add("show");
+  clearTimeout(bubbleTimer);
+  bubbleTimer = setTimeout(() => bubble.classList.remove("show"), ms);
+}
+
+/** Runs [delay ms, fn] steps; a newer reaction cancels the rest of an older one. */
+function play(name, steps, total) {
+  const my = ++token;
+  scaleOverride = null;
+  chewOpen = false;
+  busy = Date.now() + total;
+  let t = 0;
+  for (const [delay, fn] of steps) { t += delay; setTimeout(() => { if (my === token) fn(); }, t); }
+  setTimeout(() => {
+    if (my !== token) return;
+    busy = 0;
+    scaleOverride = null;
+    face({});
+    move("");
+    post({ cmd: "done", name });
+  }, total);
+}
+
+// ---------- reactions ----------
+let pats = [];
+const R = {
+  pat() {
+    const now = Date.now();
+    pats = pats.filter((t) => now - t < 1600).concat(now);
+    const n = pats.length, m = moodFor(energy);
+    if (m === "sleepy") {
+      return play("pat", [[0, () => { face({ eyes: "wink", mouth: "o" }); move("squish"); if (n === 1) say("mm..?"); fx("♥", "", { dy: 14 }); }]], 1300);
+    }
+    bloom(n >= 3 ? 6500 : 3000);
+    if (n >= 6) {
+      return play("pat", [[0, () => {
+        face({ eyes: "heart", mouth: "d", blush: true }); move("wiggle"); say(pick(["love u", "hehe stop", "more pls"]));
+        for (let i = 0; i < 5; i++) fx("♥", "", { x: 50 + rand(-18, 18), dx: rand(-16, 16), dy: rand(20, 32), delay: i * 90 });
+      }]], 1500);
+    }
+    if (n >= 3) {
+      return play("pat", [[0, () => {
+        face({ eyes: "happy", mouth: "d", blush: true }); move("wiggle");
+        fx("♥", "", { x: 42, dx: -8 }); fx("♥", "", { x: 58, dx: 8, delay: 120 });
+        if (n === 3) say("hehe");
+      }]], 1200);
+    }
+    return play("pat", [[0, () => {
+      face({ eyes: m === "tired" ? "open" : "happy", mouth: "w", blush: m !== "tired" });
+      move("squish"); fx("♥", "", { dx: rand(-6, 6) });
+      if (m === "tired" && Math.random() < 0.4) say("mm~");
+    }]], 1000);
+  },
+
+  rub() {
+    const sleepy = moodFor(energy) === "sleepy";
+    bloom(4000);
+    play("rub", [[0, () => {
+      face({ eyes: sleepy ? "closed" : "happy", mouth: "w", blush: true }); move("lean");
+      fx("~", "", { x: 30, dx: -8, dy: 16 }); fx("~", "", { x: 70, dx: 8, dy: 16, delay: 250 });
+      if (Math.random() < 0.35) say(sleepy ? "zz..purr" : "purr~");
+    }]], 1200);
+  },
+
+  called() {
+    const sleepy = moodFor(energy) === "sleepy";
+    play("called", [[0, () => {
+      face({ eyes: "wide", mouth: "o" }); move("hop");
+      fx("!", "bang", { dy: 12, dur: 700 });
+      if (sleepy) say("hm?!", 900);
+    }]], 750);
+  },
+
+  greet() {
+    const m = moodFor(energy);
+    const line = m === "sleepy" ? "*yawn* hi" : m === "tired" ? "hi..." : pick(["hi!!", "hiii", "you called?", "here!", "hehe hi"]);
+    bloom(5000);
+    play("greet", [
+      [0, () => { face({ eyes: "happy", mouth: "d", arms: "up" }); move("hop"); say(line, 1800); fx("♥", "", { dy: 22 }); }],
+      [600, () => { face({ eyes: m === "sleepy" ? "half" : "open", mouth: "w", arms: "wave" }); }],
+    ], 2000);
+  },
+
+  wake() {
+    play("wake", [
+      [0, () => { face({ eyes: "closed", mouth: "yawn", arms: "up" }); move("stretch"); }],
+      [1200, () => { face({ eyes: "happy", mouth: "d" }); say("refreshed!", 1500); bloom(8000);
+        for (let i = 0; i < 4; i++) fx("✦", "", { x: 50 + rand(-22, 22), y: 56 + rand(-8, 8), dx: rand(-10, 10), dy: rand(10, 22), delay: i * 100 }); }],
+    ], 2600);
+  },
+
+  startle() {
+    play("startle", [[0, () => { face({ eyes: "wide", mouth: "o" }); move("hop"); fx("!", "bang", { dy: 12, dur: 600 }); }]], 700);
+  },
+
+  land(how) {
+    const big = how === "big";
+    play("land", [[0, () => { if (big) { face({ eyes: "dizzy", mouth: "o" }); say("oof", 900); } move("squish"); }]], big ? 1100 : 400);
+  },
+
+  catch() {
+    play("catch", [
+      [0, () => { face({ eyes: "wide", mouth: "d", arms: "up" }); move("hop"); }],
+      [520, () => { move("hop"); if (Math.random() < 0.4) say(pick(["gotcha?", "hehe", "so close"]), 900); }],
+    ], 1100);
+  },
+
+  notice() {
+    play("notice", [[0, () => { face({ eyes: "wide", mouth: "o" }); fx("?", "bang", { dy: 12, dur: 700 }); }]], 700);
+  },
+
+  peek(name) {
+    const n = name.length > 14 ? name.slice(0, 13) + "…" : name;
+    play("peek", [[0, () => {
+      move("squish");
+      say(n ? pick([`ooh, ${n}!`, `what's in ${n}?`, `${n}!`]) : "ooh, a folder!", 1900);
+    }]], 2000);
+  },
+
+  dance() {
+    play("dance", [[0, () => {
+      face({ eyes: "happy", mouth: "d", arms: "wave" }); move("dance");
+      ["♪", "♫", "♪"].forEach((n, i) => fx(n, "", { x: 50 + rand(-22, 22), dx: rand(-10, 10), dy: rand(18, 28), delay: i * 400 }));
+    }]], 2400);
+  },
+
+  shh() {
+    play("shh", [[0, () => { face({ eyes: "closed", mouth: "w" }); say("shh...", 1400); }]], 1500);
+  },
+
+  // Fed a file: it snaps shut, chews, gulps, and says how it was (by size). Big ones get a little burp of fire.
+  chomp(taste) {
+    const lines = { snack: ["just a crumb", "snack!"], yum: ["yum!", "tasty!", "nom nom!"], big: ["so filling...", "big bite!"],
+                    huge: ["*burp*", "phew... *burp*"], many: ["a feast!", "nom nom nom!"] };
+    play("chomp", [
+      [0, () => { scaleOverride = 5; chewOpen = true; }],
+      [130, () => { chewOpen = false; scaleOverride = 4; face({ eyes: "closed", mouth: "flat", blush: true }); move("squish"); say("nom", 600); }],
+      [240, () => { face({ eyes: "closed", mouth: "w", blush: true }); move("squish"); }],
+      [240, () => { face({ eyes: "closed", mouth: "flat", blush: true }); move("squish"); say("nom nom", 700); }],
+      [240, () => { face({ eyes: "closed", mouth: "w", blush: true }); move("squish"); }],
+      [260, () => { scaleOverride = 3; face({ eyes: "closed", mouth: "o", blush: true }); move("squish"); }],
+      [200, () => {
+        scaleOverride = null; face({ eyes: "happy", mouth: "d", blush: true }); move("hop"); bloom(6000);
+        say(pick(lines[taste] || lines.yum), 1500); fx("♥", "", { dy: 24 });
+        if (taste === "big" || taste === "huge") fx("🔥", "", { x: 50, y: 56, dy: 16, dur: 1000, delay: 150 });
+      }],
+    ], 3300);
+  },
+
+  aw() {
+    play("aw", [[0, () => { face({ eyes: "half", mouth: "flat" }); move("squish"); say(pick(["aw...", "no snack?"]), 1000); }]], 1100);
+  },
+
+  // Put down after a good shake.
+  dizzy() {
+    play("dizzy", [
+      [0, () => {
+        face({ eyes: "dizzy", mouth: "o" }); move("woozy");
+        say(pick(["@_@", "everything's spinning", "wobble wobble..."]), 1700);
+        for (let i = 0; i < 3; i++) fx("✦", "", { x: 38 + i * 12, y: 54, dx: rand(-6, 6), dy: 8, delay: i * 220, dur: 900 });
+      }],
+      [1900, () => { face({ eyes: "half", mouth: "flat" }); }],
+    ], 2700);
+  },
+
+  yuck() {
+    play("yuck", [[0, () => { face({ eyes: "dizzy", mouth: "o", sweat: true }); move("shake"); say("ptooey! can't eat that", 1500); }]], 1600);
+  },
+
+  exposed() {
+    play("exposed", [[0, () => { face({ eyes: "wide", mouth: "o", sweat: true }); move("shake"); say("!?", 1000); }]], 1300);
+  },
+
+  yawn() {
+    play("yawn", [[0, () => { face({ eyes: "closed", mouth: "yawn" }); move("stretch"); }]], 1500);
+  },
+
+  // Focus sessions. Calm and encouraging, never naggy.
+  focusStart(min) {
+    play("focusStart", [[0, () => {
+      face({ eyes: "happy", mouth: "w" });
+      say(pick([`${min} min, let's go`, "I'll work with you", "focus buddy mode"]), 1800);
+    }]], 1900);
+  },
+
+  focusLeft(min) {
+    play("focusLeft", [[0, () => { say(`${min} min left` + pick([" ✦", " · you got this", " · keep going", " · nice focus"]), 2200); }]], 2300);
+  },
+
+  focusDone(count) {
+    const n = Number(count) || 1;
+    bloom(12000);
+    play("focusDone", [
+      [0, () => {
+        face({ eyes: "happy", mouth: "d", arms: "up", blush: true }); move("hop");
+        say(n > 1 ? `done! ✦ that's ${n} today` : "done! ✦", 1700);
+        for (let i = 0; i < 6; i++) fx(i % 2 ? "✦" : "♥", "", { x: 50 + rand(-22, 22), dx: rand(-12, 12), dy: rand(16, 28), delay: i * 110 });
+      }],
+      [1800, () => { face({ eyes: "happy", mouth: "w" }); say("break time? I'll play", 1800); }],
+    ], 3700);
+  },
+
+  focusStop(min) {
+    play("focusStop", [[0, () => {
+      face({ eyes: "happy", mouth: "w" });
+      say(Number(min) >= 1 ? `nice, ${min} min ✦` : "next time ✦", 2000);
+    }]], 2200);
+  },
+
+  // Woken up and turfed out of bed.
+  grumpy() {
+    play("grumpy", [
+      [0, () => { face({ eyes: "half", mouth: "flat" }); move("stretch"); say(pick(["5 more minutes...", "nnngh...", "so sleepy..."]), 1800); }],
+      [1600, () => { face({ eyes: "closed", mouth: "yawn" }); fx("z", "zz", { x: 62, y: 40, dx: 8, dy: 16, dur: 1400 }); }],
+      [900, () => { face({ eyes: "half", mouth: "flat" }); }],
+    ], 3000);
+  },
+
+  // Starting to find the desktop interesting.
+  wonder() {
+    play("wonder", [[0, () => {
+      face({ eyes: "wide" }); fx("?", "bang", { dy: 12, dur: 700 });
+      if (Math.random() < 0.5) say(pick(["ooh?", "what's this?", "hmm!", "ooh, shiny"]), 1100);
+    }]], 900);
+  },
+
+  bedtime() {
+    play("bedtime", [[0, () => { face({ eyes: "closed", mouth: "yawn" }); move("stretch"); say(pick(["*yawn* bedtime", "sleepy...", "nini"]), 1500); }]], 1600);
+  },
+
+  found() { FOUND[nextFound()](); },
+
+  // You've gone quiet: it looks round for you, then curls up for a nap.
+  nodoff() {
+    play("nodoff", [
+      [0, () => { face({ eyes: "open" }); look = -1; }],
+      [700, () => { look = 1; }],
+      [700, () => { look = 0; face({ eyes: "half" }); fx("?", "bang", { dy: 10, dur: 700 }); }],
+      [700, () => { face({ eyes: "closed", mouth: "yawn" }); move("stretch"); }],
+    ], 2600);
+  },
+
+  // Woken from that nap by you moving the mouse or typing.
+  stir() {
+    play("stir", [
+      [0, () => { face({ eyes: "half" }); move("squish"); }],
+      [400, () => { face({ eyes: "wide", mouth: "o" }); fx("!", "bang", { dy: 12, dur: 600 }); }],
+      [450, () => { face({ eyes: "happy", mouth: "w" }); if (Math.random() < 0.6) say(pick(["oh! hi", "mm? hi~", "you're here"]), 1100); }],
+    ], 1700);
+  },
+
+  // You're back: a little wave after a short break, a big hello after hours, good morning on a new day.
+  welcome(kind) {
+    const sleepy = moodFor(energy) === "sleepy";
+    if (kind === "focus") {
+      return play("welcome", [[0, () => { face({ eyes: "happy", mouth: "w" }); say(pick(["welcome back ✦", "still here with you", "back to it?"]), 2000); }]], 2200);
+    }
+    if (kind === "small") {
+      return play("welcome", [
+        [0, () => { face({ eyes: "wide", mouth: "o" }); move("squish"); }],
+        [400, () => { face({ eyes: "happy", mouth: "w", arms: "wave" }); say(pick(["oh, hi!", "welcome back", "hi again"]), 1500); }],
+      ], 2100);
+    }
+    if (kind === "mid") {
+      return play("welcome", [
+        [0, () => { face({ eyes: "wide", mouth: "o" }); fx("!", "bang", { dy: 12, dur: 600 }); }],
+        [450, () => {
+          face({ eyes: "happy", mouth: "d", arms: "wave", blush: true }); move("hop"); bloom(4000); fx("♥", "", { dy: 22 });
+          say(sleepy ? "mm.. you're back" : pick(["you're back!", "yay, you're back", "there you are!"]), 1800);
+        }],
+      ], 2700);
+    }
+    if (kind === "morning") {
+      return play("welcome", [
+        [0, () => { face({ eyes: "closed", mouth: "yawn", arms: "up" }); move("stretch"); }],
+        [1300, () => {
+          face({ eyes: "happy", mouth: "d", arms: "up", blush: true }); move("hop"); bloom(9000);
+          say(pick(["good morning!", "morning!! ✦", "g'morning~"]), 1700);
+          for (let i = 0; i < 5; i++) fx(i % 2 ? "✦" : "❀", "", { x: 50 + rand(-22, 22), dx: rand(-12, 12), dy: rand(16, 28), delay: 150 + i * 120 });
+        }],
+        [1900, () => { face({ eyes: "half", mouth: "w" }); say(pick(["5 more minutes..", "have a nice day", "*yawn* hi"]), 1300); }],
+      ], 4500);
+    }
+    // gone for hours
+    return play("welcome", [
+      [0, () => { face({ eyes: "wide", mouth: "o", arms: "up" }); move("pop"); fx("!", "bang", { dy: 14, dur: 700 }); }],
+      [500, () => {
+        face({ eyes: "heart", mouth: "d", arms: "up", blush: true }); move("hop"); bloom(9000);
+        say(pick(["you're back!!", "YOU'RE BACK!!", "missed u!!"]), 1800);
+        for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2; fx("♥", "", { dx: Math.cos(a) * 26, dy: 14 + Math.sin(a) * 18, delay: i * 70, dur: 1300 }); }
+      }],
+      [1900, () => { face({ eyes: "happy", mouth: "w", arms: "wave" }); say(pick(["missed you", "hehe hi", "welcome home"]), 1700); }],
+    ], 4500);
+  },
+
+  // Late at night: a yawn and a gentle hint, a little more pointed as it gets later.
+  nightNudge(h) {
+    const hr = Number(h);
+    const line = hr >= 23 ? pick(["getting late~", "sleep soon?", "bedtime-ish?"])
+      : hr < 2 ? pick(["it's so late...", "go sleep soon?", "rest up, ok?"])
+      : pick(["really late...", "pls sleep soon", "zz.. still up?"]);
+    play("nightNudge", [
+      [0, () => { face({ eyes: "closed", mouth: "yawn" }); move("stretch"); }],
+      [1300, () => { face({ eyes: "half", mouth: "w" }); say(line, 2000); fx("z", "zz", { x: 62, y: 40, dx: 8, dy: 16, dur: 1400 }); }],
+    ], 3400);
+  },
+};
+
+// Found-while-hiding reactions: dealt from a shuffled bag so each one shows up before any repeats.
+const FOUND = [
+  () => play("found", [
+    [0, () => { face({ eyes: "wide", mouth: "d", arms: "up" }); move("pop"); say("boo!", 1100); }],
+    [1000, () => { face({ eyes: "happy", mouth: "d" }); move("shake"); say("hehe", 1000); }],
+  ], 2400),
+  () => play("found", [
+    [0, () => { face({ eyes: "wide", mouth: "o" }); move("hop"); fx("!", "bang", { dy: 14, dur: 800 }); }],
+    [550, () => { face({ eyes: "closed", mouth: "w", arms: "up", blush: true, sweat: true }); move("shake"); say("eep!", 1300); }],
+  ], 2400),
+  () => play("found", [
+    [0, () => { face({ eyes: "happy", mouth: "d", arms: "up" }); move("spin"); bloom(5000);
+      for (let i = 0; i < 6; i++) fx("✦", "", { x: 50 + rand(-26, 26), y: 38 + rand(-10, 30), dx: rand(-12, 12), dy: rand(8, 22), delay: 200 + i * 90 }); }],
+    [750, () => { say("ta-da!", 1300); }],
+  ], 2300),
+  () => play("found", [
+    [0, () => { face({ eyes: "heart", mouth: "d", blush: true }); move("pop"); say("found me!", 1500); bloom(5000);
+      for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2; fx("♥", "", { dx: Math.cos(a) * 26, dy: 14 + Math.sin(a) * 18, delay: i * 70, dur: 1300 }); } }],
+  ], 2300),
+  () => play("found", [
+    [0, () => { face({ eyes: "dizzy", mouth: "o" }); move("tumble"); }],
+    [300, () => { for (let i = 0; i < 3; i++) fx("✦", "", { x: 38 + i * 12, y: 52, dx: rand(-6, 6), dy: 8, delay: i * 160, dur: 900 }); say("@_@", 1000); }],
+    [1300, () => { face({ eyes: "happy", mouth: "d" }); say("ok u win", 1300); }],
+  ], 2700),
+  () => play("found", [
+    [0, () => { face({ eyes: "happy", mouth: "d", arms: "wave" }); move("dance"); say("la la", 1800);
+      ["♪", "♫", "♪", "♫"].forEach((n, i) => fx(n, "", { x: 50 + rand(-24, 24), dx: rand(-10, 10), dy: rand(18, 30), delay: i * 380 })); }],
+  ], 2400),
+];
+let bag = [], lastFound = -1;
+function nextFound() {
+  if (!bag.length) {
+    bag = FOUND.map((_, i) => i).sort(() => Math.random() - 0.5);
+    if (bag[bag.length - 1] === lastFound) bag.unshift(bag.pop());  // no repeat across bags either
+  }
+  return (lastFound = bag.pop());
+}
+
+// ---------- what Swift calls ----------
+window.P = {
+  energy(e) {
+    energy = Math.max(0, Math.min(1, e));
+    pet.dataset.mood = moodFor(energy);
+    if (!busy) face({});
+  },
+  mode(m) {
+    mode = m;
+    if (!m.startsWith("peek")) nervous = false;
+    if (m === "held" && Math.random() < 0.5) say("wheee!", 900);
+    if (!busy) face({});
+  },
+  look(d, up = 0) { toldLook = [d, up]; look = d; lookUp = up; },
+  home(on) { stage.classList.toggle("home", on); layoutBubble(); },
+  shake(n) {
+    const prev = shakeLevel;
+    shakeLevel = n;
+    if (n === 1 && prev === 0) say(pick(["whoa!", "eek!", "hey!"]), 700);
+    if (n === 3 && prev < 3) say(pick(["wahhh!", "stop~!", "bleh!"]), 900);
+  },
+  gape(level) {
+    const prev = gapeLevel;
+    gapeLevel = level;
+    if (!busy) face({});
+    if (level === 1 && prev === 0) say(pick(["food?", "ooh?", "for me?"]), 900);
+    if (level === 3 && prev < 3) say("aaah!", 700);
+  },
+  near(on) { nervous = on && mode.startsWith("peek"); },
+  theme(t) { document.documentElement.dataset.theme = t; readPalette(); },
+  gear(g) { gear = g; },
+  focus(p) {
+    focusP = p;
+    // a tiny sparkle each time another dot fills
+    const dots = p == null ? 0 : Math.floor(p * 10 + 1e-6);
+    if (p != null && dots > focusDots) fx("✦", "", { x: 50 + (dots - 6) * 2, y: 14, dy: 10, dur: 800 });
+    focusDots = dots;
+  },
+  // "name" or "name:argument"
+  react(name) {
+    const [n, ...rest] = name.split(":");
+    (R[n] || (() => post({ cmd: "done", name })))(rest.join(":"));
+  },
+};
+
+if (!BEDMODE) document.addEventListener("mousedown", (e) => { if (e.button === 0) post({ cmd: "down" }); });
+
+// Little things it does on its own while sitting or hiding.
+setInterval(() => {
+  if (busy) return;
+  const m = moodFor(energy), r = Math.random();
+  if (mode === "nap") {
+    if (r < 0.8) fx("z", "zz", { x: 64, y: 44, dx: 8, dy: 20, dur: 1900 });
+  } else if (mode === "sit") {
+    if (m === "sleepy") { fx("z", "zz", { x: 64, y: 50, dx: 8, dy: 20, dur: 1800 }); return; }
+    if (r < 0.07 && toldLook[0] === 0 && toldLook[1] === 0) {  // only when it isn't watching the cursor
+      look = -1;
+      setTimeout(() => { if (mode === "sit") look = 1; }, 900);
+      setTimeout(() => { look = toldLook[0]; }, 1800);
+    } else if (m === "tired" && r < 0.09) R.yawn();
+  } else if (mode.startsWith("peek") && r < 0.08) {
+    move("squish");
+  }
+}, 1300);
+
+function gust() {
+  const px = 17 * curScale, cx = 130, cy = 6 + px * 0.42;
+  const a = rand(0, Math.PI * 2), r = rand(px * 0.6, px * 0.9);
+  const x0 = Math.cos(a) * r, y0 = Math.sin(a) * r;
+  const el = document.createElement("span");
+  el.className = "gust";
+  el.style.left = cx + x0 + "px";
+  el.style.bottom = cy + y0 + "px";
+  stage.appendChild(el);
+  el.animate([
+    { transform: `translate(0, 0) rotate(${-a}rad)`, opacity: 0 },
+    { opacity: 0.9, offset: 0.3 },
+    { transform: `translate(${-x0}px, ${y0}px) rotate(${-a}rad)`, opacity: 0 },
+  ], { duration: 380, easing: "ease-in" }).onfinish = () => el.remove();
+}
+setInterval(() => { if (mode === "gape" && gapeLevel >= 2 && !busy) gust(); }, 90);
+
+// ---------- the bedroom (pet.html?bed): a little bed in the top-right corner ----------
+// 30×22 pixels at 2px. H headboard · h its sheen · O pillow and sheet · B blanket · c its stars · F frame
+const BED_COLS = 30, BED_ROWS = 22, BED_SCALE = 2;
+let bedOccupied = true, bedSky = "night", bedStir = 0;
+
+function bedBack(now) {
+  const px = [];
+  const fill = (y, x0, x1, c) => { for (let x = x0; x <= x1; x++) px.push([y, x, c]); };
+  if (bedSky === "day") {
+    // a little sun with twinkling rays, and a cloud
+    for (const [y, x] of [[1, 2], [1, 3], [2, 1], [2, 2], [2, 3], [2, 4], [3, 1], [3, 2], [3, 3], [3, 4], [4, 2], [4, 3]]) px.push([y, x, "y"]);
+    px.push([2, 2, "Y"]);
+    const ray = Math.floor(now / 1100) % 2 ? "y" : "Y";
+    for (const [y, x] of [[0, 0], [0, 5], [5, 0], [5, 5]]) px.push([y, x, ray]);
+    for (const [y, x] of [[1, 25], [1, 26], [2, 24], [2, 25], [2, 26], [2, 27], [2, 28]]) px.push([y, x, "O"]);
+  } else {
+    // a little moon and two twinkling stars
+    for (const [y, x] of [[0, 2], [0, 3], [1, 1], [2, 1], [3, 2], [3, 3]]) px.push([y, x, "Y"]);
+    px.push([1, 26, Math.floor(now / 900) % 2 ? "a" : "L"], [4, 28, Math.floor(now / 1300) % 2 ? "L" : "P"]);
+  }
+  // rounded headboard
+  fill(6, 8, 21, "k");
+  fill(7, 6, 7, "k"); fill(7, 8, 21, "H"); fill(7, 22, 23, "k");
+  fill(8, 5, 5, "k"); fill(8, 6, 23, "H"); fill(8, 24, 24, "k"); fill(8, 9, 20, "h");
+  for (let y = 9; y <= 13; y++) { fill(y, 4, 4, "k"); fill(y, 5, 24, "H"); fill(y, 25, 25, "k"); }
+  // pillow
+  fill(11, 10, 19, "O"); fill(11, 9, 9, "h"); fill(11, 20, 20, "h");
+  fill(12, 9, 20, "O"); fill(13, 9, 20, "O");
+  return px;
+}
+
+function bedFront(occupied) {
+  const px = [];
+  const fill = (y, x0, x1, c) => { for (let x = x0; x <= x1; x++) px.push([y, x, c]); };
+  if (occupied) {
+    // pulled up to its chin
+    fill(13, 8, 21, "k");
+    fill(14, 3, 7, "k"); fill(14, 8, 21, "B"); fill(14, 22, 26, "k");
+    for (let y = 15; y <= 18; y++) { fill(y, 2, 2, "k"); fill(y, 3, 26, "B"); fill(y, 27, 27, "k"); }
+  } else {
+    // thrown back, so you can see the sheet
+    fill(14, 3, 26, "O");
+    fill(15, 3, 26, "k");
+    fill(16, 2, 2, "k"); fill(16, 3, 26, "c"); fill(16, 27, 27, "k");
+    for (let y = 17; y <= 18; y++) { fill(y, 2, 2, "k"); fill(y, 3, 26, "B"); fill(y, 27, 27, "k"); }
+  }
+  for (const [y, x] of [[16, 6], [17, 13], [15, 20], [17, 24], [18, 9]]) if (occupied || y > 16) px.push([y, x, "c"]);
+  fill(19, 2, 27, "k");
+  fill(20, 2, 2, "k"); fill(20, 3, 26, "F"); fill(20, 27, 27, "k");
+  for (const x of [3, 4, 25, 26]) px.push([21, x, "k"]);
+  return px;
+}
+
+function drawBed() {
+  const now = Date.now(), breathe = Math.floor(now / 1400) % 2;
+  rowOffset = 0;
+  paintBoth(bctx, bgtx, BED_SCALE, () => {
+    put(bedBack(now), 0, 0);
+    if (bedOccupied) {
+      // its head on the pillow, eyes shut, bud drooping; everything below the blanket is hidden by it.
+      // Stirring (you came back from a short break), it lifts its head and peeks for a moment.
+      const left = bedStir - now, stirring = left > 0, y = stirring ? 3 : 4 + breathe;
+      rows(BODY, 2, 7, y);
+      put(stirring ? ANT.up : ANT.droop, 7, y);
+      put(!stirring ? EYES.closed : left > 1500 || left < 300 ? EYES.half : EYES.open, 7, y);
+    }
+    put(bedFront(bedOccupied), 0, 0);
+  });
+}
+
+let bctx, bgtx;
+function startBedroom() {
+  document.body.classList.add("bedmode");
+  const room = $("bedroom"), w = BED_COLS * BED_SCALE, h = BED_ROWS * BED_SCALE;
+  room.style.width = w + "px";
+  room.style.height = h + "px";
+  for (const c of [$("bedcanvas"), $("bedglow")]) {
+    c.width = w * DPR;
+    c.height = h * DPR;
+    c.style.width = w + "px";
+    c.style.height = h + "px";
+  }
+  bctx = $("bedcanvas").getContext("2d");
+  bgtx = $("bedglow").getContext("2d");
+  document.addEventListener("mousedown", (e) => { if (e.button === 0) post({ cmd: "bed" }); });
+  // z's drifting up from the sleeper
+  setInterval(() => { if (bedOccupied && Date.now() > bedStir) bedFloat("z"); }, 1600);
+  setInterval(drawBed, 100);
+  drawBed();
+}
+
+/** A letter drifting up from the sleeper's head. */
+function bedFloat(text) {
+  const z = document.createElement("span");
+  z.className = "fx zz";
+  z.textContent = text;
+  z.style.right = 4 + 30 - 4 + "px";
+  z.style.bottom = 30 + "px";
+  document.body.appendChild(z);
+  z.animate([
+    { transform: "translate(0, 0)", opacity: 0 },
+    { opacity: 0.85, offset: 0.2 },
+    { transform: "translate(12px, -18px)", opacity: 0 },
+  ], { duration: 2200, easing: "steps(8, end)" }).onfinish = () => z.remove();
+}
+
+window.B = {
+  // Redraw now rather than on the next tick: macOS may slow this page's timers, and a stale frame
+  // would leave a sleeper in the bed after the pet has got up.
+  occupied(on) { bedOccupied = on; drawBed(); },
+  stir() {
+    if (!bedOccupied) return;
+    bedStir = Date.now() + 1800;
+    drawBed();
+    setTimeout(() => bedFloat("!"), 300);
+    setTimeout(drawBed, 1850);
+  },
+  sky(s) { bedSky = s; drawBed(); },
+  theme(t) { document.documentElement.dataset.theme = t; readPalette(); },
+};
+
+readPalette();
+if (BEDMODE) {
+  startBedroom();
+} else {
+  P.energy(energy);
+  setInterval(draw, 50);
+  draw();
+}
+</script>
+</body>
+</html>
