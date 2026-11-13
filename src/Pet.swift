@@ -1186,6 +1186,9 @@ final class Pet: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
 
     private func tapped() {
         if hiding != nil { return found() }
+        // Sitting up in bed (saying hi, or that it's late): a tap gets it up, same as clicking the bed.
+        // Otherwise the tap was lost behind its line and it lay straight back down.
+        if atHome, !inBed { return bedClicked() }
         // At its desk, a tap gets a quiet "how long's left" rather than a fuss.
         interject(focus != nil ? "focusLeft:\(minutesLeft)" : "pat", focus != nil ? 2.4 : 1.6)
         onTap?(body(at: pos))
