@@ -179,13 +179,24 @@ final class Pet: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     fileprivate var fakeLastInput: Date?
     fileprivate var fakeHour: Int?
     fileprivate var homeOverride: NSPoint?
+    fileprivate var fakeMood: String?
+    fileprivate var pageFps = -1
     private var mouse: NSPoint { fakeMouse ?? NSEvent.mouseLocation }
     #else
     private var mouse: NSPoint { NSEvent.mouseLocation }
     #endif
 
     private(set) var energy = 0.7
-    private var theme = "bubblegum"
+    private var theme = "mood"
+
+    // Its mood, from how you've been using your Mac: which app is in front, and how often you switch.
+    private var mood = "bright"
+    private var moodShown = false
+    private var moodCandidate = ""
+    private var moodSince = Date.distantPast
+    private var lastMoodSample = Date.distantPast
+    private var appSamples: [(Date, String)] = []  // the app in front every 5 s while you're active
+    private var switches: [Date] = []
     private var gear = ""
     private var topLevel: NSWindow.Level = .floating
     private var roams = true
@@ -507,6 +518,52 @@ final class Pet: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
 
     private var isLate: Bool { hour >= 23 || hour < 4 }
 
+    /// Every 5 s: note which app you're in, and now and then let that change its mood (and so its colour).
+    private func updateMood(_ now: Date) {
+        guard now.timeIntervalSince(lastMoodSample) >= 5 else { return }
+        lastMoodSample = now
+        if idleSeconds < 90, let b = NSWorkspace.shared.frontmostApplication?.bundleIdentifier { appSamples.append((now, b)) }
+        appSamples.removeAll { now.timeIntervalSince($0.0) > 20 * 60 }
+        switches.removeAll { now.timeIntervalSince($0) > 10 * 60 }
+        var next = moodNow()
+        #if DEBUG
+        if let f = fakeMood { next = f }
+        #endif
+        guard next != mood || !moodShown else { moodCandidate = ""; return }
+        // A new mood has to hold for half a minute before it shows, so it doesn't flicker as you switch apps.
+        if moodShown {
+            if next != moodCandidate { moodCandidate = next; moodSince = now; return }
+            #if DEBUG
+            let wait: TimeInterval = fakeMood != nil ? 0 : 30
+            #else
+            let wait: TimeInterval = 30
+            #endif
+            guard now.timeIntervalSince(moodSince) >= wait else { return }
+        }
+        mood = next
+        moodShown = true
+        moodCandidate = ""
+        js("P.mood('\(mood)')")
+        bedJS("B.mood('\(mood)')")
+    }
+
+    /// What the last while says: deep in Claude (or your code), music on, flitting between apps, or flagging.
+    private func moodNow() -> String {
+        if energy < 0.2 || isLate { return "tired" }
+        let n = appSamples.count
+        if n >= 24 {  // at least two minutes of you actually at the Mac
+            let inClaude = appSamples.filter { Self.isClaude($0.1) }.count
+            if Double(inClaude) / Double(n) >= 0.55 { return "focused" }
+        }
+        if appSamples.suffix(120).contains(where: { Self.kind(of: $0.1) == .music }) { return "calm" }
+        if switches.count >= 14 { return "curious" }
+        return "bright"
+    }
+
+    private static func isClaude(_ bundle: String) -> Bool {
+        bundle == "com.anthropic.claudefordesktop" || kind(of: bundle) == .code
+    }
+
     /// Once a second: did you just come back, have you gone quiet, is it late?
     private func checkPresence(_ now: Date) {
         // Not before both pages can show a hello, or it would be lost.
@@ -636,11 +693,11 @@ final class Pet: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         if webView === bedWeb {
             bedReady = true
             sky = ""  // resent on the next presence check
-            bedJS("B.theme('\(theme)'); B.occupied(\(inBed))")
+            bedJS("B.theme('\(theme)'); B.mood('\(mood)'); B.occupied(\(inBed))")
             return
         }
         ready = true
-        js("P.theme('\(theme)'); P.energy(\(energy)); P.home(\(atHome)); P.mode('\(sentMode)'); P.gear('\(gear)')")
+        js("P.theme('\(theme)'); P.mood('\(mood)'); P.energy(\(energy)); P.home(\(atHome)); P.mode('\(sentMode)'); P.gear('\(gear)')")
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -649,6 +706,9 @@ final class Pet: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         switch cmd {
         case "down": pressed()
         case "done": reactDone = true
+        #if DEBUG
+        case "fps": pageFps = body["v"] as? Int ?? -1
+        #endif
         default: break
         }
     }
@@ -684,6 +744,7 @@ final class Pet: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let dt = CGFloat(min(now.timeIntervalSince(lastTick), 0.1))
         lastTick = now
         checkPresence(now)
+        updateMood(now)
         guard shown else { return }
         if inBed {
             // Asleep: only a file dragged over to the bed gets it up (for a snack).
@@ -715,14 +776,14 @@ final class Pet: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         case let .walk(to, speed, gait):
             done = move(to, gait == .sneak ? speed : speed * pace, dt)
         case let .fly(to):
-            done = move(to, 280 * pace, dt)
+            done = glide(to, 280 * pace, dt, elapsed)
         case let .flyOnto(id, at):
             guard let w = world.first(where: { $0.id == id && $0.isNormal }) else { done = true; break }  // gone: just drop
             let x = w.rect.minX + Self.half + (w.rect.width - 2 * Self.half) * at
-            done = move(NSPoint(x: x, y: min(w.rect.maxY + Self.half + 50, homeArea.maxY - Self.half)), 280 * pace, dt)
+            done = glide(NSPoint(x: x, y: min(w.rect.maxY + Self.half + 50, homeArea.maxY - Self.half)), 280 * pace, dt, elapsed)
         case .flyHome:
             // While it's up, "home" can wait: it carries on exploring instead.
-            done = awake || move(homeCenter, 300 * pace, dt)
+            done = awake || glide(homeCenter, 300 * pace, dt, elapsed)
             if done, !awake { setMode("sit") }  // landed on the bed
         case .fall:
             done = fall(dt)
@@ -757,7 +818,7 @@ final class Pet: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         case .chase:
             // Stop just under the cursor, where it's easy to pat.
             let m = mouse
-            done = move(NSPoint(x: m.x, y: m.y - 32), 440 * pace, dt, within: 10) || elapsed > 12
+            done = glide(NSPoint(x: m.x, y: m.y - 32), 440 * pace, dt, elapsed, within: 10) || elapsed > 12
         case let .wait(t):
             done = elapsed >= t
         case let .react(_, t):
@@ -822,6 +883,14 @@ final class Pet: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     private func reactArg(_ name: String) -> String {
         guard name.hasPrefix("peek:"), let id = Int(name.dropFirst(5)) else { return name }
         return "peek:" + (folderNames[id] ?? "")
+    }
+
+    /// Flying eases in and out: it drifts off, then slows to settle, rather than starting and stopping dead.
+    private func glide(_ target: NSPoint, _ speed: CGFloat, _ dt: CGFloat, _ elapsed: TimeInterval, within: CGFloat = 1.5) -> Bool {
+        let d = hypot(target.x - pos.x, target.y - pos.y)
+        let u = CGFloat(min(1, elapsed / 0.5))
+        let start = 0.2 + 0.8 * u * u * (3 - 2 * u), arrive = max(0.22, min(1, d / 90))
+        return move(target, speed * start * arrive, dt, within: within)
     }
 
     /// Heads straight for a body-centre point; true once it's there.
@@ -916,6 +985,18 @@ final class Pet: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         return spans.filter { $0.upperBound - $0.lowerBound >= 16 }
     }
 
+    /// Whether it would be seen standing at x on this edge. A window edge behind the one you're
+    /// working in (say a full-screen app) is out of sight, so it falls past it instead of vanishing.
+    private func inView(_ s: Surface, at x: CGFloat) -> Bool {
+        guard s.kind == .window else { return true }  // the floor and icons are never behind a window
+        for w in world where w.isNormal && w.pid != myPid {
+            if w.id == s.id { return true }
+            if w.rect.minY < s.y + 2 * Self.half, w.rect.maxY > s.y,
+               w.rect.minX - Self.half < x, x < w.rect.maxX + Self.half { return false }
+        }
+        return true
+    }
+
     private func land(on s: Surface, speed: CGFloat) {
         standing = s
         standingRect = world.first(where: { $0.id == s.id })?.rect ?? .zero
@@ -945,7 +1026,7 @@ final class Pet: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let feet = pos.y - Self.half, next = pos.y + vy * dt
         moved = true
         let landing = surfaces()
-            .filter { $0.minX + 8 <= x && x <= $0.maxX - 8 && $0.y <= feet + 1 && $0.y >= next - Self.half - 1 }
+            .filter { $0.minX + 8 <= x && x <= $0.maxX - 8 && $0.y <= feet + 1 && $0.y >= next - Self.half - 1 && inView($0, at: x) }
             .max { $0.y < $1.y }
         if let s = landing {
             place(NSPoint(x: x, y: s.y + Self.half))
@@ -967,7 +1048,7 @@ final class Pet: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         moved = true
         if abs(target.x - jumpFrom.x) > 2 { setLook(target.x > jumpFrom.x ? 1 : -1, 0) }
         guard k >= 1 else { return false }
-        if let s = surfaces().first(where: { abs($0.y - feet.y) < 4 && $0.minX + 6 <= feet.x && feet.x <= $0.maxX - 6 }) {
+        if let s = surfaces().first(where: { abs($0.y - feet.y) < 4 && $0.minX + 6 <= feet.x && feet.x <= $0.maxX - 6 && inView($0, at: feet.x) }) {
             land(on: s, speed: 400)
         } else {
             plan.insert(.fall, at: min(1, plan.count))  // the edge moved away mid-jump
@@ -1537,6 +1618,7 @@ final class Pet: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
 
     @objc private func appActivated(_ note: Notification) {
         let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        if idleSeconds < 30 { switches.append(Date()) }
         switchedTo(app?.bundleIdentifier ?? "")
     }
 
@@ -1797,12 +1879,15 @@ final class Pet: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
 
     // MARK: The stats pill
 
-    /// Above its head, or below when it's near the top of the screen.
+    /// Beside it, so what it says (and the hearts) stay in view: to its right, or to its left (or the bed's)
+    /// near the screen's edge. The card's page has 10 pt of clear padding round it.
     private func placeCompanion(_ c: NSWindow) {
-        let area = homeArea, f = c.frame
-        var y = pos.y + Self.half + 4
-        if y + f.height > area.maxY { y = pos.y - Self.half - 6 - f.height }
-        let x = min(max(pos.x - f.width / 2, area.minX + 4), area.maxX - f.width - 4)
+        let area = homeArea, f = c.frame, gap: CGFloat = 8, pad: CGFloat = 10
+        var x = pos.x + Self.half + gap - pad
+        if inBed || atHome || x + f.width - pad > area.maxX {
+            x = ((inBed || atHome) ? bed.frame.minX : pos.x - Self.half) - gap + pad - f.width
+        }
+        let y = min(max(pos.y - f.height / 2, area.minY + 4), area.maxY - f.height + pad - 4)
         c.setFrameOrigin(NSPoint(x: x.rounded(), y: y.rounded()))
     }
 
@@ -2044,6 +2129,9 @@ extension Pet {
             case "input": self.fakeLastInput = Date()  // you just touched something
             case "hour": self.fakeHour = Int(arg)       // "hour:23" pretends it's 11pm; "hour:" is the real time
             case "newday": self.seenDay = ""            // the next hello counts as the first of the day
+            case "mood":  // "mood:calm" shows that mood on the next tick; "mood:" goes back to the real one
+                self.fakeMood = arg.isEmpty ? nil : arg
+                self.lastMoodSample = .distantPast; self.moodCandidate = arg; self.moodSince = .distantPast
             case "nudge": self.lastNudge = .distantPast
             case "stir": self.bedJS("B.stir()")
             case "dump": self.dump(note: "")
@@ -2068,6 +2156,7 @@ extension Pet {
             "focusToday": UserDefaults.standard.integer(forKey: "focusCount"),
             "mouse": [mouse.x, mouse.y], "over": body(at: pos).insetBy(dx: -3, dy: -3).contains(mouse), "covered": covered(mouse),
             "idle": idleSeconds, "lastActiveAgo": Date().timeIntervalSince(lastActive), "hour": hour, "sky": sky,
+            "fps": pageFps, "mood": mood, "moodCandidate": moodCandidate, "appSamples": appSamples.count, "switches": switches.count,
             "seenDay": seenDay, "nudgeAgo": min(Date().timeIntervalSince(lastNudge), 1e9),
             "bed": NSStringFromRect(bed.frame), "bedVisible": bed.isVisible, "petVisible": panel.isVisible,
             "dock": dockIcons.0.map { "\($0.name)@\(Int($0.rect.midX)),\(Int($0.rect.maxY))" }, "ax": AXIsProcessTrusted(),

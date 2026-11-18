@@ -1,6 +1,6 @@
 # Claude Usage: a tiny desktop pet for Claude
 
-A pixel pet that lives on your Mac desktop. It runs on your Claude usage: the more you have left, the livelier it is.
+A small pet that lives on your Mac desktop. It runs on your Claude usage, and its mood follows how you use your Mac.
 
 ![The pet waking up, coming when called, playing hide and seek, eating a file and focusing beside you](docs/preview.gif)
 
@@ -47,14 +47,15 @@ cd claude-desktop-pet
 | **Comes when called** | Press **⌃⌥P**. |
 | **Explores** | It walks along windows, peeks into folders you open, and hops along your Dock. |
 | **Plays hide and seek** | It hides behind windows. Hover over its hiding spot to find it. |
-| **Pat it** | Click it for hearts and your Claude usage (session and week). |
+| **Pat it** | Click it for hearts and a small card with your Claude usage (session and week). |
 | **Shake it** | Pick it up and shake. Gently. |
 | **Eats your trash** | Drag a file onto it. It opens wide and eats it. The file goes to the Trash, never deleted. |
 | **Runs on your usage** | The less Claude usage you have left, the sleepier it gets. |
+| **Has moods** | Its colour and the way it moves follow what you've been doing: clay when you're deep in Claude or your code, gold when you're busy, mint when you're hopping between apps, lavender with music on, and grey when it's late or your usage is low. |
 | **Focus buddy** | Press **⌃⌥F** for a 25-minute session. It works at a little desk beside you. |
 | **Notices you** | It naps when you step away, greets you when you're back, says good morning, and reminds you to sleep after 11pm. |
 
-**Menu bar ✦:** focus sessions, call or hide the pet (**⌃⌥H**), themes, opacity, always on top, ghost mode (click-through), and Quit.
+**Menu bar ✦:** focus sessions, call or hide the pet (**⌃⌥H**), color (follows its mood, or pick one), opacity, always on top, ghost mode (click-through), and Quit.
 
 ## Permissions it may ask for
 
@@ -66,6 +67,7 @@ cd claude-desktop-pet
 
 - Your Claude login is only ever sent to `api.anthropic.com`, to fetch your usage limits.
 - It reads token counts from Claude Code's local history (`~/.claude/projects`) on your Mac. That never leaves your Mac.
+- For its mood, it notes which app is in front every few seconds and keeps only the last 20 minutes, in memory. That never leaves your Mac either.
 - No analytics, no tracking, no other servers.
 
 ## Uninstall

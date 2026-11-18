@@ -264,7 +264,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private let scanQueue = DispatchQueue(label: "claude-usage.scan")
     private let limitsQueue = DispatchQueue(label: "claude-usage.limits")
     private let prefs = UserDefaults.standard
-    private let themes = ["bubblegum", "aqua", "cyber"]
+    // The pet's colour: "mood" follows how you use your Mac; the others pin one look.
+    private let themes = ["mood", "clay", "gold", "mint", "lavender"]
+    private let themeTitles = ["Follows Mood", "Clay", "Gold", "Mint", "Lavender"]
     private var panel: OverlayPanel!
     private var web: OverlayWebView!
     private var statusItem: NSStatusItem!
@@ -363,8 +365,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         if !AXIsProcessTrusted() { addItem(menu, "Let Pet Hop on Exact Dock Icons…", #selector(askDockAccess)) }
         menu.addItem(.separator())
         let themeMenu = NSMenu()
-        for (i, name) in themes.enumerated() { themeItems.append(addItem(themeMenu, name.capitalized, #selector(setTheme(_:)), tag: i)) }
-        addSubmenu(menu, "Theme", themeMenu)
+        for (i, title) in themeTitles.enumerated() {
+            themeItems.append(addItem(themeMenu, title, #selector(setTheme(_:)), tag: i))
+            if i == 0 { themeMenu.addItem(.separator()) }
+        }
+        addSubmenu(menu, "Color", themeMenu)
         let opacityMenu = NSMenu()
         for pct in [100, 85, 70, 50] { opacityItems.append(addItem(opacityMenu, "\(pct)%", #selector(setOpacity(_:)), tag: pct)) }
         addSubmenu(menu, "Opacity", opacityMenu)
